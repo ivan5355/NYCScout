@@ -44,8 +44,16 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.method === "POST") {
+        // Use the original raw body for signature verification.
+        // - Express (local): set via express.json({ verify }) in server.js
+        // - Vercel (prod):   automatically available as req.body (string) or req.rawBody
         let rawBody;
-        if (typeof req.body === "string") {
+        if (req.rawBody) {
+            // Prefer the raw buffer/string captured before JSON parsing
+            rawBody = Buffer.isBuffer(req.rawBody)
+                ? req.rawBody.toString("utf8")
+                : req.rawBody;
+        } else if (typeof req.body === "string") {
             rawBody = req.body;
         } else if (Buffer.isBuffer(req.body)) {
             rawBody = req.body.toString("utf8");
