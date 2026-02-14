@@ -29,8 +29,35 @@ function verifySignature(req, rawBody) {
     );
 }
 
+// ─── Vercel config: disable automatic body parsing ────────────────────────────
+// (exported at bottom alongside handler)
+const vercelConfig = {
+    api: {
+        bodyParser: false,
+    },
+};
+
+// ─── Helper: read raw body from stream ─────────────────────────────────────────
+function getRawBody(req) {
+    return new Promise((resolve, reject) => {
+        // Express (local): raw body was captured in server.js verify callback
+        if (req.rawBody) {
+            return resolve(
+                Buffer.isBuffer(req.rawBody)
+                    ? req.rawBody
+                    : Buffer.from(req.rawBody)
+            );
+        }
+        // Vercel / stream: read from request
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => resolve(Buffer.concat(chunks)));
+        req.on("error", reject);
+    });
+}
+
 // ─── Main Handler ──────────────────────────────────────────────────────────────
-module.exports = async function handler(req, res) {
+async function handler(req, res) {
     if (req.method === "GET") {
         const mode = req.query["hub.mode"];
         const token = req.query["hub.verify_token"];
@@ -44,29 +71,16 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.method === "POST") {
-        // Use the original raw body for signature verification.
-        // - Express (local): set via express.json({ verify }) in server.js
-        // - Vercel (prod):   automatically available as req.body (string) or req.rawBody
-        let rawBody;
-        if (req.rawBody) {
-            // Prefer the raw buffer/string captured before JSON parsing
-            rawBody = Buffer.isBuffer(req.rawBody)
-                ? req.rawBody.toString("utf8")
-                : req.rawBody;
-        } else if (typeof req.body === "string") {
-            rawBody = req.body;
-        } else if (Buffer.isBuffer(req.body)) {
-            rawBody = req.body.toString("utf8");
-        } else {
-            rawBody = JSON.stringify(req.body);
-        }
+        // Get the true raw bytes — works on both Express and Vercel
+        const rawBodyBuffer = await getRawBody(req);
+        const rawBody = rawBodyBuffer.toString("utf8");
 
         if (process.env.APP_SECRET && !verifySignature(req, rawBody)) {
             console.error("[Webhook] Invalid signature");
             return res.status(401).send("Invalid signature");
         }
 
-        const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+        const body = JSON.parse(rawBody);
 
         if (body.object !== "instagram") {
             return res.status(200).send("EVENT_RECEIVED");
@@ -96,7 +110,10 @@ module.exports = async function handler(req, res) {
     }
 
     return res.status(405).send("Method Not Allowed");
-};
+}
+
+module.exports = handler;
+module.exports.config = vercelConfig;
 
 // ─── Core Message Processor ────────────────────────────────────────────────────
 async function processMessage(senderId, messageText, models) {
