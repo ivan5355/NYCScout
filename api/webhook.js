@@ -1,29 +1,15 @@
 /**
  * NYC Scout — Vercel Serverless Webhook Handler
- *
- * Handles:
- *   GET  /api/webhook → Meta webhook verification
- *   POST /api/webhook → Incoming Instagram DM processing
- *
- * Flow:
- *   1. Verify signature (APP_SECRET)
- *   2. Check rate limit
- *   3. Load user context (last 3 conversations)
- *   4. Parse intent via Gemini
- *   5. If confident → query MongoDB → format → send recommendations
- *   6. If not confident → send clarifying question
- *   7. Log conversation
- *   8. Update user patterns
  */
 
 const crypto = require("crypto");
 const { connectDB } = require("../lib/db");
+const { getModels } = require("../lib/models/index");
 const { checkRateLimit } = require("../lib/rateLimiter");
 const { parseIntent, formatRecommendations, generatePatternAwareGreeting } = require("../lib/gemini");
 const { queryRestaurants, queryEvents } = require("../lib/recommend");
 const { sendMessage, sendMessageSequence } = require("../lib/instagram");
 const { updateUserPatterns, getUserProfile } = require("../lib/userPatterns");
-const Conversation = require("../lib/models/Conversation");
 
 // ─── Signature Verification ────────────────────────────────────────────────────
 function verifySignature(req, rawBody) {
@@ -45,7 +31,6 @@ function verifySignature(req, rawBody) {
 
 // ─── Main Handler ──────────────────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
-    // ── GET: Webhook Verification ──
     if (req.method === "GET") {
         const mode = req.query["hub.mode"];
         const token = req.query["hub.verify_token"];
@@ -58,9 +43,7 @@ module.exports = async function handler(req, res) {
         return res.status(403).send("Forbidden");
     }
 
-    // ── POST: Incoming Messages ──
     if (req.method === "POST") {
-        // Collect raw body for signature verification
         let rawBody;
         if (typeof req.body === "string") {
             rawBody = req.body;
@@ -70,54 +53,37 @@ module.exports = async function handler(req, res) {
             rawBody = JSON.stringify(req.body);
         }
 
-        // Verify signature
         if (process.env.APP_SECRET && !verifySignature(req, rawBody)) {
             console.error("[Webhook] Invalid signature");
             return res.status(401).send("Invalid signature");
         }
 
-        // Parse body
         const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
 
-        console.log("[Webhook] Received object:", body.object);
-
         if (body.object !== "instagram") {
-            console.log("[Webhook] Ignoring non-instagram object:", body.object);
             return res.status(200).send("EVENT_RECEIVED");
         }
 
-        // Process messages BEFORE responding (Vercel kills function after res.send)
         try {
-            await connectDB();
+            const dbs = await connectDB();
+            const models = getModels(dbs);
 
             for (const entry of body.entry || []) {
-                console.log("[Webhook] Processing entry, messaging events:", (entry.messaging || []).length);
-
                 for (const event of entry.messaging || []) {
-                    // Skip echoed messages from the bot itself
-                    if (event.message?.is_echo) {
-                        console.log("[Webhook] Skipping echo message");
-                        continue;
-                    }
+                    if (event.message?.is_echo) continue;
 
                     const senderId = event.sender?.id;
                     const messageText = event.message?.text;
 
-                    console.log("[Webhook] Sender:", senderId, "Message:", messageText);
-
-                    if (!senderId || !messageText) {
-                        console.log("[Webhook] Missing senderId or messageText, skipping");
-                        continue;
+                    if (senderId && messageText) {
+                        await processMessage(senderId, messageText, models);
                     }
-
-                    await processMessage(senderId, messageText);
                 }
             }
         } catch (err) {
             console.error("[Webhook] Processing error:", err);
         }
 
-        // Respond to Meta AFTER processing is complete
         return res.status(200).send("EVENT_RECEIVED");
     }
 
@@ -125,112 +91,79 @@ module.exports = async function handler(req, res) {
 };
 
 // ─── Core Message Processor ────────────────────────────────────────────────────
-async function processMessage(senderId, messageText) {
+async function processMessage(senderId, messageText, models) {
+    const { Conversation } = models;
     try {
         // 1. Rate limit check
         const { allowed } = await checkRateLimit(senderId);
         if (!allowed) {
-            // Calm throttling message (implementation.md Section 4)
-            await sendMessage(
-                senderId,
-                "Give me a moment before we look again — try again shortly."
-            );
+            await sendMessage(senderId, "Give me a moment before we look again — try again shortly.");
             return;
         }
 
-        // 2. Load prior context (last 3 conversations)
+        // 2. Load prior context
         const priorContext = await Conversation.find({ instagram_id: senderId })
             .sort({ createdAt: -1 })
             .limit(3)
             .lean();
 
-        // 3. Check for pattern-aware greeting opportunity
+        // 3. Greeting
         const userProfile = await getUserProfile(senderId);
         const patternGreeting = await generatePatternAwareGreeting(userProfile);
 
-        // 4. Parse intent via Gemini
+        // 4. Intent
         const intent = await parseIntent(messageText, priorContext);
         console.log("[Intent]", JSON.stringify(intent));
 
-        // 5. Handle based on confidence / action
         let botResponse = "";
         let recommendationsReturned = [];
 
         if (intent.action === "recommend" && intent.type !== "unclear") {
-            // ── Query database ──
             let results = [];
-
             if (intent.type === "restaurant") {
                 results = await queryRestaurants(intent);
             } else if (intent.type === "event") {
                 results = await queryEvents(intent);
             }
 
-            if (results.length === 0) {
-                // Calm no-results message (design.md)
-                const noResults =
-                    "I couldn't find something that fits that perfectly yet. Want to try a nearby neighborhood or shift the vibe a little?";
-                await sendMessage(senderId, noResults);
-                botResponse = noResults;
-            } else {
-                // Format and send recommendations
+            if (results.length > 0) {
                 const messages = await formatRecommendations(results, intent);
-
-                // Optionally prepend pattern-aware greeting
-                const allMessages = patternGreeting
-                    ? [patternGreeting, ...messages]
-                    : messages;
-
-                await sendMessageSequence(senderId, allMessages);
-                botResponse = allMessages.join(" | ");
-                recommendationsReturned = results.map((r) => ({
-                    name: r.name,
-                    type: intent.type,
-                }));
-
-                // Update user patterns
+                if (patternGreeting) messages.unshift(patternGreeting);
+                await sendMessageSequence(senderId, messages);
+                botResponse = messages.join(" || ");
+                recommendationsReturned = results;
                 await updateUserPatterns(senderId, intent);
+            } else {
+                const fallback = "I couldn't find something that fits that perfectly yet. Want to try a nearby neighborhood or a different direction?";
+                await sendMessage(senderId, fallback);
+                botResponse = fallback;
             }
-        } else if (
-            intent.action === "clarify" ||
-            intent.action === "direct"
-        ) {
-            // ── Send clarifying question ──
-            const question =
-                intent.clarifyingQuestion ||
-                "Hey — tell me what you're in the mood for.";
+        } else if (intent.action === "clarify" || intent.action === "direct") {
+            const question = intent.clarifyingQuestion || "Hey — tell me what you're in the mood for.";
             await sendMessage(senderId, question);
             botResponse = question;
         } else {
-            // Fallback welcome
-            const welcome =
-                "Hey — tell me what you're in the mood for. Food, something happening tonight, or just an idea?";
+            const welcome = "Hey — tell me what you're in the mood for. Food, something happening tonight, or just an idea?";
             await sendMessage(senderId, welcome);
             botResponse = welcome;
         }
 
-        // 6. Log conversation
+        // 6. Log
         await Conversation.create({
             instagram_id: senderId,
             raw_message: messageText,
             parsed_intent: intent,
             confidence_score: intent.confidenceScore,
-            clarifying_question_sent:
-                intent.action === "clarify" || intent.action === "direct",
+            clarifying_question_sent: intent.action === "clarify" || intent.action === "direct",
             recommendations_returned: recommendationsReturned,
             bot_response: botResponse,
         });
     } catch (err) {
         console.error("[ProcessMessage] Error:", err);
-
-        // Calm failure message (implementation.md Section 8)
         try {
-            await sendMessage(
-                senderId,
-                "Something's shifting on my end. Give me one second."
-            );
-        } catch (sendErr) {
-            console.error("[ProcessMessage] Failed to send error message:", sendErr);
+            await sendMessage(senderId, "Something's shifting on my end. Give me one second.");
+        } catch (msgErr) {
+            console.error("[ProcessMessage] Failed to send error message:", msgErr);
         }
     }
 }

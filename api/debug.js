@@ -3,19 +3,12 @@
  * GET /api/debug → shows collection counts and sample documents
  */
 const { connectDB } = require("../lib/db");
-const eventSchema = require("../lib/models/Event");
-const restaurantSchema = require("../lib/models/Restaurant");
+const { getModels } = require("../lib/models/index");
 
 module.exports = async function handler(req, res) {
     try {
         const dbs = await connectDB();
-
-        // Bind models to correct DBs
-        // Event is in goodrec
-        const Event = dbs.goodrec.models.Event || dbs.goodrec.model("Event", eventSchema);
-
-        // Restaurant is in nyc-events
-        const Restaurant = dbs.nycEvents.models.Restaurant || dbs.nycEvents.model("Restaurant", restaurantSchema);
+        const { Restaurant, Event } = getModels(dbs);
 
         const restaurantCount = await Restaurant.countDocuments();
         const eventCount = await Event.countDocuments();
