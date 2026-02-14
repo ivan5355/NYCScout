@@ -154,11 +154,13 @@ async function processMessage(senderId, messageText, models) {
 
         // 3. Greeting
         const userProfile = await getUserProfile(senderId);
-        const patternGreeting = await generatePatternAwareGreeting(userProfile);
 
         // 4. Intent
         const intent = await parseIntent(messageText, priorContext);
         console.log("[Intent]", JSON.stringify(intent));
+
+        // 5. Context-aware greeting
+        const patternGreeting = await generatePatternAwareGreeting(userProfile, intent);
 
         let botResponse = "";
         let recommendationsReturned = [];
