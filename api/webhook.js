@@ -12,21 +12,41 @@ const { sendMessage, sendMessageSequence } = require("../lib/instagram");
 const { updateUserPatterns, getUserProfile } = require("../lib/userPatterns");
 
 // ─── Signature Verification ────────────────────────────────────────────────────
-function verifySignature(req, rawBody) {
+function verifySignature(req, rawBodyBuffer) {
     const signature = req.headers["x-hub-signature-256"];
-    if (!signature || !process.env.APP_SECRET) return false;
+    if (!signature) {
+        console.warn("[Webhook] Missing x-hub-signature-256 header");
+        return false;
+    }
+
+    const secret = process.env.APP_SECRET?.trim().replace(/^["']|["']$/g, '');
+
+    if (!secret) {
+        console.warn("[Webhook] APP_SECRET not found in environment variables!");
+        return true; // Don't block if we can't verify (useful for testing)
+    }
 
     const expectedSig =
         "sha256=" +
         crypto
-            .createHmac("sha256", process.env.APP_SECRET)
-            .update(rawBody)
+            .createHmac("sha256", secret)
+            .update(rawBodyBuffer)
             .digest("hex");
 
-    return crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expectedSig)
-    );
+    const signatureBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expectedSig);
+
+    const match = signatureBuffer.length === expectedBuffer.length &&
+        crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
+
+    if (!match) {
+        console.error("[Webhook] Signature mismatch!");
+        console.log(`- Received partial: ${signature.substring(0, 15)}...`);
+        console.log(`- Expected partial: ${expectedSig.substring(0, 15)}...`);
+        console.log(`- Secret length: ${secret.length}`);
+    }
+
+    return match;
 }
 
 // ─── Vercel config: disable automatic body parsing ────────────────────────────
@@ -73,13 +93,13 @@ async function handler(req, res) {
     if (req.method === "POST") {
         // Get the true raw bytes — works on both Express and Vercel
         const rawBodyBuffer = await getRawBody(req);
-        const rawBody = rawBodyBuffer.toString("utf8");
 
-        if (process.env.APP_SECRET && !verifySignature(req, rawBody)) {
+        if (!verifySignature(req, rawBodyBuffer)) {
             console.error("[Webhook] Invalid signature");
             return res.status(401).send("Invalid signature");
         }
 
+        const rawBody = rawBodyBuffer.toString("utf8");
         const body = JSON.parse(rawBody);
 
         if (body.object !== "instagram") {

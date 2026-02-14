@@ -3,7 +3,9 @@
  * In production, Vercel serverless handles requests via api/webhook.js.
  */
 
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env.local") });
+require("dotenv").config(); // Fallback to .env
 
 const express = require("express");
 const webhookHandler = require("./api/webhook");
