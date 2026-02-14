@@ -76,26 +76,39 @@ module.exports = async function handler(req, res) {
             return res.status(401).send("Invalid signature");
         }
 
-        // Respond immediately to avoid Meta timeout
-        res.status(200).send("EVENT_RECEIVED");
-
         // Parse body
         const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
 
-        if (body.object !== "instagram") return;
+        console.log("[Webhook] Received object:", body.object);
 
+        if (body.object !== "instagram") {
+            console.log("[Webhook] Ignoring non-instagram object:", body.object);
+            return res.status(200).send("EVENT_RECEIVED");
+        }
+
+        // Process messages BEFORE responding (Vercel kills function after res.send)
         try {
             await connectDB();
 
             for (const entry of body.entry || []) {
+                console.log("[Webhook] Processing entry, messaging events:", (entry.messaging || []).length);
+
                 for (const event of entry.messaging || []) {
                     // Skip echoed messages from the bot itself
-                    if (event.message?.is_echo) continue;
+                    if (event.message?.is_echo) {
+                        console.log("[Webhook] Skipping echo message");
+                        continue;
+                    }
 
                     const senderId = event.sender?.id;
                     const messageText = event.message?.text;
 
-                    if (!senderId || !messageText) continue;
+                    console.log("[Webhook] Sender:", senderId, "Message:", messageText);
+
+                    if (!senderId || !messageText) {
+                        console.log("[Webhook] Missing senderId or messageText, skipping");
+                        continue;
+                    }
 
                     await processMessage(senderId, messageText);
                 }
@@ -104,7 +117,8 @@ module.exports = async function handler(req, res) {
             console.error("[Webhook] Processing error:", err);
         }
 
-        return;
+        // Respond to Meta AFTER processing is complete
+        return res.status(200).send("EVENT_RECEIVED");
     }
 
     return res.status(405).send("Method Not Allowed");
