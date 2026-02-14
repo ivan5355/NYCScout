@@ -142,7 +142,7 @@ async function processMessage(senderId, messageText, models) {
         // 1. Rate limit check
         const { allowed } = await checkRateLimit(senderId);
         if (!allowed) {
-            await sendMessage(senderId, "Give me a moment before we look again — try again shortly.");
+            await sendMessage(senderId, "I've reached my limit for now — let's try again in 24 hours.");
             return;
         }
 
