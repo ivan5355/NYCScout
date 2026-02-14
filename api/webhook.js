@@ -181,7 +181,7 @@ async function processMessage(senderId, messageText, models) {
                 recommendationsReturned = results;
                 await updateUserPatterns(senderId, intent);
             } else {
-                const fallback = "I couldn't find something that fits that perfectly yet. Want to try a nearby neighborhood or a different direction?";
+                const fallback = "I couldn't find something that fits that perfectly yet. Want to try a different borough or direction?";
                 await sendMessage(senderId, fallback);
                 botResponse = fallback;
             }
