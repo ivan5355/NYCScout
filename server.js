@@ -22,6 +22,9 @@ app.use(
     })
 );
 
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, "public")));
+
 // Route webhook traffic
 app.all("/api/webhook", (req, res) => webhookHandler(req, res));
 
