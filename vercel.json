@@ -1,39 +1,13 @@
 {
   "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "api/**/*.js",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/css/(.*)",
-      "dest": "/public/css/$1"
+      "source": "/api/webhook",
+      "destination": "/api/webhook.js"
     },
     {
-      "src": "/terms.html",
-      "dest": "/public/terms.html"
-    },
-    {
-      "src": "/privacy.html",
-      "dest": "/public/privacy.html"
-    },
-    {
-      "src": "/deletion.html",
-      "dest": "/public/deletion.html"
-    },
-    {
-      "src": "/api/webhook",
-      "dest": "/api/webhook.js"
-    },
-    {
-      "src": "/api/debug",
-      "dest": "/api/debug.js"
-    },
-    {
-      "src": "/",
-      "dest": "/public/index.html"
+      "source": "/api/debug",
+      "destination": "/api/debug.js"
     }
   ]
 }
