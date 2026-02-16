@@ -110,6 +110,21 @@ async function handler(req, res) {
             const dbs = await connectDB();
             const models = getModels(dbs);
 
+            // --- 30-Day Auto-Cleanup (Meta Compliance) ---
+            try {
+                const thirtyDaysAgo = new Date();
+                thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+                const cleanupResult = await models.Conversation.deleteMany({
+                    createdAt: { $lt: thirtyDaysAgo }
+                });
+                if (cleanupResult.deletedCount > 0) {
+                    console.log(`[Cleanup] Auto-deleted ${cleanupResult.deletedCount} messages older than 30 days.`);
+                }
+            } catch (cleanupErr) {
+                console.error("[Cleanup] Error:", cleanupErr);
+            }
+            // ----------------------------------------------
+
             for (const entry of body.entry || []) {
                 for (const event of entry.messaging || []) {
                     if (event.message?.is_echo) continue;
